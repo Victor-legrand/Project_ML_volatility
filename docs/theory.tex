@@ -1,0 +1,525 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, citecolor=blue!50!black, urlcolor=blue!50!black}
+
+\newcommand{\RV}{\mathrm{RV}}
+\newcommand{\IV}{\mathrm{IV}}
+\newcommand{\E}{\mathbb{E}}
+
+\title{Volatility Forecasting with Machine Learning\\
+and Trading the Volatility Risk Premium\\
+\large Theoretical foundations of the \texttt{vol\_ml\_fund} project}
+\author{Quantitative research project}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document presents the theoretical foundations of the
+\texttt{vol\_ml\_fund} research platform: the measurement of realized
+volatility and its estimators, implied volatility and the variance risk
+premium, forecasting models (HAR-RV and machine learning), the purged
+walk-forward evaluation protocol, and the transformation of forecasts into
+trading positions. Each section justifies the design choices made in the code
+and, in particular, the improvements introduced in version~2 of the project.
+This document is educational: it constitutes neither investment advice nor a
+promise of performance.
+\end{abstract}
+
+\tableofcontents
+
+%=============================================================================
+\section{Introduction: why trade volatility?}
+
+Volatility exhibits two statistical properties that set it apart from returns
+themselves: it is \emph{persistent} (volatility clustering: turbulent periods
+follow turbulent periods) and partly \emph{predictable}, whereas the sign of
+returns is essentially not. This is what makes volatility forecasting
+attractive for a machine learning project: the signal-to-noise ratio is far
+more favorable than for directional prediction.
+
+The economic foundation of the strategy studied here is the \emph{volatility
+risk premium} (or variance risk premium): on average, the volatility implied
+by option prices exceeds the volatility that is subsequently realized.
+Sellers of crash insurance get paid a premium. The project consists of
+(i)~forecasting future realized volatility, (ii)~comparing it with the
+implied volatility quoted by the market, and (iii)~taking a position when the
+predicted gap deviates sufficiently from its usual value.
+
+%=============================================================================
+\section{Measuring realized volatility}
+
+\subsection{Logarithmic returns}
+
+For a closing price $P_t$, the log return is
+\begin{equation}
+r_t = \ln\frac{P_t}{P_{t-1}}.
+\end{equation}
+Log returns are additive across time
+($r_{t,t+k} = \sum_{i=1}^{k} r_{t+i}$), which simplifies multi-horizon
+aggregation, and they fit naturally with the assumption of log-normal prices.
+\emph{Implementation:} \texttt{src/data/preprocess.py}.
+
+\subsection{Close-to-close estimator}
+
+The annualized realized volatility over an $n$-day window is
+\begin{equation}
+\RV_t^{(n)} = \sqrt{\frac{252}{n-1}\sum_{i=0}^{n-1}\bigl(r_{t-i}-\bar{r}\bigr)^2},
+\end{equation}
+i.e.\ the rolling standard deviation of daily returns multiplied by
+$\sqrt{252}$ (the number of trading days per year). The window ends at date
+$t$: no future information is used.
+
+\subsection{Range-based estimators: Parkinson and Garman--Klass}
+\label{sec:range}
+
+The close-to-close estimator uses only one data point per day and discards
+the intraday information contained in the daily extremes. Parkinson (1980)
+shows that with the daily high $H_t$ and low $L_t$,
+\begin{equation}
+\hat{\sigma}^2_{P,t} = \frac{1}{4\ln 2}\,\Bigl(\ln\frac{H_t}{L_t}\Bigr)^2
+\end{equation}
+is roughly \textbf{5 times more efficient} (its sampling variance is 5 times
+smaller) than $r_t^2$, under driftless Brownian motion. Garman and Klass
+(1980) add the open $O_t$ and the close $C_t$:
+\begin{equation}
+\hat{\sigma}^2_{GK,t} = \tfrac{1}{2}\Bigl(\ln\tfrac{H_t}{L_t}\Bigr)^2
+- (2\ln 2 - 1)\Bigl(\ln\tfrac{C_t}{O_t}\Bigr)^2,
+\end{equation}
+gaining further efficiency ($\approx 7.4\times$). Annualization is obtained
+by averaging over the window and multiplying by 252 before taking the square
+root.
+
+\textbf{Why this improvement:} at daily frequency, this is the cheapest way
+to increase the precision of the volatility features --- the statistical
+equivalent of several extra days of observations, without high-frequency
+data. \emph{Implementation:} \texttt{garman\_klass\_volatility} and
+\texttt{parkinson\_volatility} in
+\texttt{src/features/volatility\_features.py}.
+
+\subsection{Downside semi-volatility and the leverage effect}
+
+Volatility reacts asymmetrically to returns: a price decline increases future
+volatility more than a rise of the same magnitude (the \emph{leverage
+effect}). The downside semi-volatility
+\begin{equation}
+\RV^{-}_t = \sqrt{\frac{252}{n}\sum_{i=0}^{n-1} r_{t-i}^2\,
+\mathbf{1}\{r_{t-i}<0\}}
+\end{equation}
+captures this asymmetry; adding it to the regressors follows the spirit of
+the LHAR model (HAR with leverage) and of Patton and Sheppard (2015) on
+``good'' and ``bad'' volatility.
+
+%=============================================================================
+\section{Implied volatility: the VIX and its term structure}
+
+The VIX measures the 30-day implied volatility of S\&P~500 options, computed
+model-free from a continuum of strikes (CBOE methodology; Whaley, 2009).
+Divided by 100, it is directly comparable to an annualized realized
+volatility. The VIX3M is its 3-month counterpart.
+
+The ratio $\mathrm{VIX}/\mathrm{VIX3M}$ summarizes the \emph{term structure}
+of implied volatility:
+\begin{itemize}
+\item ratio $<1$ (\emph{contango}): calm regime, short-dated vol below
+  long-dated vol --- the normal state, favorable to \emph{short vol}
+  strategies;
+\item ratio $>1$ (\emph{backwardation}): market stress, demand for immediate
+  hedging --- often heralds elevated realized volatility.
+\end{itemize}
+It is one of the most extensively documented predictors of volatility
+regimes, hence its inclusion among the features
+(\texttt{vix\_term\_structure}).
+
+%=============================================================================
+\section{The variance risk premium}
+\label{sec:vrp}
+
+\subsection{Definition and stylized facts}
+
+The variance risk premium (VRP) is the gap between implied variance and the
+expectation of future realized variance:
+\begin{equation}
+\mathrm{VRP}_t = \IV_t^2 - \E_t\!\left[\RV^2_{t\to t+h}\right] .
+\end{equation}
+Empirically it is \emph{positive on average}: on equity indices, $\IV$
+exceeds future RV roughly 85\,\% of the time (Carr and Wu, 2009; Bollerslev,
+Tauchen and Zhou, 2009). Systematically selling volatility collects this
+premium --- at the price of rare but brutal losses when volatility explodes
+(the ``picking up pennies in front of a steamroller'' profile).
+
+\subsection{Why target the ratio rather than the level}
+\label{sec:target}
+
+Version~1 of the project predicted the \emph{level} of future RV. The Random
+Forest diagnostic was unambiguous: implied volatility carried 90\,\% of the
+feature importance. The model was essentially learning that
+``$\RV_{\text{future}} \approx \mathrm{VIX}$'', information already known to
+the entire market and therefore without trading value.
+
+Version~2 predicts instead
+\begin{equation}
+y_t = \ln\frac{\RV_{t+1\to t+h}}{\IV_t},
+\label{eq:target}
+\end{equation}
+for three reasons:
+\begin{enumerate}
+\item \textbf{It is the traded quantity.} The signal compares precisely the
+  predicted RV with the quoted IV; predicting their log-ratio directly aligns
+  the model's loss function with the economic object of interest (the VRP
+  residual: what the option market does \emph{not} already price).
+\item \textbf{The logarithm stabilizes the distribution.} RV is positive and
+  strongly right-skewed (fat tail: March 2020, August 2015\ldots). In log
+  space the distribution is close to normal (Andersen et al., 2001), the
+  error variance is more homogeneous, and extreme episodes no longer dominate
+  least-squares estimation.
+\item \textbf{The ratio is approximately stationary.} The level of volatility
+  switches regimes (5\,\% in 2017, 80\,\% in 2020); the RV/IV ratio
+  oscillates around a stable mean ($\approx e^{-0.2}$), which helps
+  out-of-sample generalization.
+\end{enumerate}
+Predictions are mapped back to levels via
+$\widehat{\RV} = \IV_t\, e^{\hat{y}}$ for evaluation, so that all models and
+benchmarks are compared on the same scale.
+\emph{Implementation:} \texttt{transform\_target} / \texttt{invert\_target}.
+
+%=============================================================================
+\section{Forecasting models}
+
+\subsection{HAR-RV: the reference benchmark}
+
+The HAR-RV model (\emph{Heterogeneous AutoRegressive}, Corsi 2009) regresses
+future volatility on realized volatilities measured over three horizons:
+\begin{equation}
+\RV_{t+h} = \beta_0 + \beta_d\, \RV_t^{(d)} + \beta_w\, \RV_t^{(w)}
++ \beta_m\, \RV_t^{(m)} + \varepsilon_{t+h},
+\end{equation}
+where $d$, $w$, $m$ denote daily, weekly and monthly windows (here
+approximated by 5, 20 and 60 days in the absence of intraday data). The
+intuition is that of a heterogeneous \emph{volatility cascade}: traders
+operate at different horizons and long-horizon volatility influences
+short-horizon volatility. Despite its simplicity (three OLS coefficients),
+the HAR is notoriously hard to beat --- which is why it serves as the
+reference in the Diebold--Mariano tests.
+
+\subsection{HAR-X: making the benchmark honest}
+
+Comparing a HAR that sees no option-market information against ML models that
+see the VIX would be unfair. The \textbf{HAR-X} adds implied volatility as an
+exogenous regressor: it is the standard academic benchmark whenever option
+data is available, and the real opponent to beat before machine learning can
+be declared useful.
+
+\subsection{Regularized regression: Ridge and Lasso}
+
+With some twenty correlated features (the multi-window RVs resemble each
+other), OLS becomes unstable. Regularization adds a penalty on the norm of
+the coefficients:
+\begin{equation}
+\hat{\beta} = \arg\min_\beta\; \|y - X\beta\|_2^2
++ \lambda \|\beta\|_2^2 \quad (\text{Ridge}), \qquad
+\lambda \|\beta\|_1 \quad (\text{Lasso}).
+\end{equation}
+Ridge shrinks correlated coefficients towards common values; Lasso sets some
+of them to zero (variable selection). In volatility forecasting, these
+regularized linear models are frequently on par with ensemble methods at a
+fraction of the computational cost, and they guard against the hasty
+conclusion that ``non-linear ML is necessary''. Features are standardized
+inside a pipeline so that the penalty applies on comparable scales.
+
+\subsection{Random forests and gradient boosting}
+
+The two ensemble methods capture non-linearities (threshold effects on the
+term structure, drawdown $\times$ volatility interactions) without manual
+specification:
+\begin{itemize}
+\item \textbf{Random Forest}: an average of many trees decorrelated through
+  bootstrapping and feature subsampling; it reduces variance and is robust to
+  hyperparameters, but cannot extrapolate beyond the values seen in training
+  (an unexpected advantage in log-ratio space, where it bounds extreme
+  forecasts).
+\item \textbf{Gradient Boosting}: sequential addition of shallow trees
+  correcting the residuals of the current model; lower bias, but more prone
+  to overfitting --- hence a low learning rate and limited depth.
+\end{itemize}
+Tree depth and the minimum number of observations per leaf are deliberately
+restrictive: in financial time series the signal-to-noise ratio is low and
+complexity is paid for out of sample.
+
+\subsection{Quantile regression: quantifying uncertainty}
+
+Gradient boosting with the \emph{pinball} loss estimates conditional
+quantiles $q_{10}$ and $q_{90}$ of the target. The band $[q_{10}, q_{90}]$
+measures forecast uncertainty: when this band straddles zero (in log-ratio
+space), the \emph{sign} of the edge is uncertain and the position size is
+halved (section~\ref{sec:signal}). Quantiles in log-ratio space carry over to
+RV space through the monotonic transform $x \mapsto \IV e^{x}$, which
+preserves quantiles.
+
+\subsection{Ensemble and naive benchmarks}
+
+The \textbf{ensemble} averages the predictions (in RV space) of several model
+families: since errors from different families are imperfectly correlated,
+averaging reduces variance at essentially no cost in bias --- a classic
+result of the forecast combination literature (Bates and Granger, 1969).
+
+Two \textbf{naive benchmarks} are always included:
+$\widehat{\RV} = \RV_t^{(5)}$ (random walk in volatility) and
+$\widehat{\RV} = \IV_t$ (the option market is right). A model unable to beat
+these two does not deserve further attention: this is the fundamental
+non-regression test of any forecasting project.
+
+%=============================================================================
+\section{Evaluation protocol}
+
+\subsection{Look-ahead bias}
+
+A backtest is only meaningful if, at every date, the strategy uses only the
+information available on that date. Three classic leaks are blocked and
+\emph{unit-tested} (\texttt{tests/test\_lookahead.py}):
+\begin{enumerate}
+\item \textbf{Target construction}: $y_t$ uses returns from $t+1$ to $t+h$
+  exclusively; features stop at $t$.
+\item \textbf{Execution}: a position decided at the close of $t$ only touches
+  the return of $t+1$ (one-day lag in the backtest engine).
+\item \textbf{Target overlap} (purge): see below.
+\end{enumerate}
+
+\subsection{Walk-forward with purging}
+\label{sec:wf}
+
+A single train/test split (v1) suffers from two flaws: the model is frozen
+for years (nobody does that in practice), and the performance measure depends
+heavily on the chosen cut-off. The \emph{walk-forward} protocol re-fits every
+model on a rolling window (1260 days $\approx$ 5 years) every 63 days
+($\approx$ one quarter), and predicts only the next block.
+
+\textbf{Purging} is the subtle point: the target at date $t$ contains returns
+up to $t+h$. If training runs up to $t$ and prediction starts at $t+1$, the
+last $h$ training targets overlap the predicted period --- a genuine, if
+discreet, information leak. We therefore leave a gap of $h$ days between the
+end of the training set and the first prediction (the general
+purging/embargo rule popularized by López de Prado, 2018).
+
+\subsection{Metrics and sub-period stability}
+
+Forecasts are evaluated in RV space with RMSE, MAE and $R^2$. The RMSE is
+also computed \textbf{per calendar year}: a model may post a good global
+score merely because it navigated (or failed) a single episode --- 2020
+typically dominates any global metric. The annual table makes this phenomenon
+immediately visible.
+
+\subsection{The Diebold--Mariano test}
+
+Comparing two RMSEs says nothing about whether the gap is significant. The
+Diebold--Mariano test (1995) considers the loss differential
+$d_t = e_{A,t}^2 - e_{B,t}^2$ and tests $H_0 : \E[d_t]=0$ with the statistic
+\begin{equation}
+\mathrm{DM} = \frac{\bar{d}}{\sqrt{\widehat{\mathrm{Var}}_{LR}(\bar d)}}
+\;\xrightarrow{d}\; \mathcal{N}(0,1),
+\end{equation}
+where the long-run variance is estimated with Bartlett weights up to lag
+$h-1$ (Newey--West): for an $h$-day horizon, forecast errors overlap
+mechanically and are autocorrelated up to order $h-1$. A negative and
+significant DM against the HAR justifies a model's extra complexity; an
+insignificant DM is an equally valid research finding.
+
+%=============================================================================
+\section{From signal to portfolio}
+\label{sec:signal}
+
+\subsection{The score}
+
+The signal rests on the score
+\begin{equation}
+s_t = \ln\frac{\widehat{\RV}_{t+1\to t+h}}{\IV_t},
+\end{equation}
+directly inherited from target~\eqref{eq:target}: $s_t>0$ means the model
+expects more volatility than the market prices (volatility is ``cheap''
+$\Rightarrow$ long position); $s_t<0$, the opposite. Since the VRP is
+positive on average, $s_t$ is negative most of the time: the strategy spends
+most of its life \emph{short vol}, collecting the premium, but can flip when
+the model anticipates a spike.
+
+\subsection{Hysteresis: two thresholds beat one}
+
+A single threshold (v1) opens and closes the position every time the score
+oscillates around it --- with 40\,\% daily turnover, transaction costs
+devoured the P\&L. \textbf{Hysteresis} separates the entry threshold from the
+exit threshold: a position opens when $|s_t|$ exceeds
+$\theta_{\text{entry}}$ and only closes when $|s_t|$ falls back below
+$\theta_{\text{exit}} < \theta_{\text{entry}}$. The asymmetric dead band
+eliminates the round-trips around the threshold (observed turnover drops from
+0.40 to 0.07 per day in our runs).
+
+\subsection{Proportional sizing and conviction}
+
+Rather than a binary $\pm1$ position, size grows with conviction:
+\begin{equation}
+w_t = d_t \cdot \min\!\Bigl(\frac{|s_t|}{\kappa},\, 1\Bigr)
+\cdot \underbrace{\bigl(\tfrac{1}{2}\bigr)^{\mathbf{1}\{q_{10,t}<0<q_{90,t}\}}}_{\text{quantile uncertainty}},
+\end{equation}
+where $d_t \in \{-1,0,1\}$ is the hysteresis direction and $\kappa$ the
+sizing scale. A small edge takes a small position; an edge whose very sign is
+uncertain (quantile band straddling zero) is halved.
+
+\subsection{Volatility targeting}
+
+Volatility proxies are themselves enormously and variably volatile
+(50--100\,\% annualized). Without control, portfolio risk would be dictated
+by the proxy's regime rather than by the model's conviction.
+\emph{Volatility targeting} normalizes:
+\begin{equation}
+w_t^{\text{final}} = w_t \cdot
+\min\!\Bigl(\frac{\sigma^\star}{\hat{\sigma}_{\text{proxy},t}},\; L_{\max}\Bigr),
+\end{equation}
+with $\sigma^\star$ the target volatility (30\,\% in the config),
+$\hat{\sigma}_{\text{proxy},t}$ the rolling volatility of the traded leg
+(computed from past data only) and $L_{\max}$ the maximum leverage.
+
+\subsection{Instruments: why VIXY and SVXY, and their dangers}
+
+The \emph{spot} VIX is not tradable: it is a calculated index with no cash
+replicating portfolio. Version~1 backtested on its returns, producing results
+with no economic meaning. Version~2 uses two genuinely tradable ETPs:
+\begin{itemize}
+\item \textbf{VIXY} (long vol): replicates a rolling basket of
+  $\sim$1-month VIX futures. In contango (85\,\% of the time), the
+  systematic roll \emph{costs} money: the ETP structurally decays ($-40$ to
+  $-70\,\%$ per year in calm regimes). That is the price of insurance.
+\item \textbf{SVXY} (short vol): inverse exposure ($-0.5\times$ since 2018)
+  to the same basket; it \emph{collects} the roll in contango. A long
+  position in SVXY expresses volatility selling without short selling.
+\end{itemize}
+On February 5, 2018 (the \emph{volmageddon}), the VIX more than doubled in a
+single session; XIV (a product analogous to SVXY) lost $\sim$95\,\% and was
+liquidated, and SVXY cut its leverage from $-1$ to $-0.5$. This episode is
+\emph{inside} our backtest data --- deliberately: any short-vol strategy must
+be judged through it. It illustrates the fundamental limitation of the Sharpe
+ratio for strategies with fat, asymmetric tails (next section).
+
+\subsection{Transaction costs}
+
+Every weight change on every leg pays a proportional cost $c\,|\Delta w_t|$
+with $c = 10$ basis points --- the order of magnitude of the spread plus
+impact for liquid ETPs at research-size trades. This model ignores financing,
+securities borrowing and the ETPs' management fees (already partly reflected
+in their prices).
+
+%=============================================================================
+\section{Performance metrics}
+
+For a series of daily net returns $R_t$ and an equity curve
+$E_t = E_0\prod_{u\le t}(1+R_u)$:
+\begin{align}
+\text{Sharpe} &= \frac{\bar{R} - r_f/252}{\sigma_R}\sqrt{252},\\[2pt]
+\text{Max drawdown} &= \min_t \Bigl(\frac{E_t}{\max_{u\le t}E_u} - 1\Bigr),\\[2pt]
+\text{CAGR} &= \Bigl(\frac{E_T}{E_0}\Bigr)^{252/T} - 1 .
+\end{align}
+A caveat: for a short-vol strategy, the return distribution is strongly
+left-skewed. The Sharpe ratio, which uses only the first two moments,
+overstates the quality of such strategies; the max drawdown and a visual
+inspection of the equity curve around stress episodes (February 2018,
+March 2020) are indispensable to any judgment.
+
+%=============================================================================
+\section{Summary: rationale for the v2 improvements}
+
+\begin{center}
+\small
+\begin{tabular}{p{4.2cm} p{6.2cm} p{3.8cm}}
+\toprule
+\textbf{Improvement} & \textbf{Theoretical rationale} & \textbf{Module} \\
+\midrule
+Target $\ln(\RV/\IV)$ & Stationarity, log-normality, alignment with the traded quantity (\S\ref{sec:target}) & \texttt{features/} \\
+Garman--Klass, Parkinson & $5$--$7\times$ statistical efficiency (\S\ref{sec:range}) & \texttt{features/} \\
+Downside semi-vol & Leverage effect, LHAR & \texttt{features/} \\
+VIX/VIX3M term structure & Documented regime predictor & \texttt{features/} \\
+Shocks, drawdown, seasonality & Volatility memory, asymmetry & \texttt{features/} \\
+HAR-X, Ridge, Lasso & Honest benchmarks; regularization against collinearity & \texttt{models/} \\
+Quantile GB & Forecast uncertainty $\to$ sizing & \texttt{models/} \\
+Ensemble + naive benchmarks & Forecast combination; non-regression test & \texttt{models/} \\
+Purged walk-forward & Realistic re-training; target-overlap leakage (\S\ref{sec:wf}) & \texttt{models/walkforward} \\
+Annual RMSE + Diebold--Mariano & Stability across regimes; statistical significance & \texttt{models/evaluation} \\
+Hysteresis & Turnover $\div 6$, costs under control & \texttt{signals/} \\
+Conviction sizing + vol targeting & Risk driven by the model, not by the proxy & \texttt{signals/} \\
+VIXY/SVXY legs & Genuinely tradable instruments, explicit roll yield & \texttt{backtest/} \\
+Anti-look-ahead tests & The three classic leaks locked down by pytest & \texttt{tests/} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%=============================================================================
+\section{Limitations and extensions}
+
+This framework remains a deliberate simplification. The main limitations, in
+order of importance:
+\begin{enumerate}
+\item \textbf{Instruments}: ETPs aggregate the futures roll; working directly
+  on the VIX futures curve (or delta-hedged straddles) would give clean
+  control over which point of the term structure is bought or sold.
+\item \textbf{Hyperparameters}: they are fixed in the config; selecting them
+  by temporal cross-validation \emph{nested inside each walk-forward window}
+  would be more rigorous (but costly).
+\item \textbf{Data snooping}: the signal thresholds and windows were chosen
+  reasonably but without a formal procedure; a sensitivity analysis
+  (threshold grids, White's reality check) is required before drawing any
+  conclusion.
+\item \textbf{Tail risk}: no stop-loss, no daily loss limit, no CVaR-based
+  sizing --- all indispensable for short vol beyond the research stage.
+\item \textbf{Microstructure}: constant costs, no volatility-dependent
+  slippage (yet it is precisely when volatility explodes that spreads
+  widen).
+\end{enumerate}
+
+%=============================================================================
+\begin{thebibliography}{99}
+
+\bibitem{andersen2001} Andersen, T., Bollerslev, T., Diebold, F., Labys, P.
+(2001). \emph{The Distribution of Realized Exchange Rate Volatility}. Journal
+of the American Statistical Association, 96(453).
+
+\bibitem{bates1969} Bates, J., Granger, C. (1969). \emph{The Combination of
+Forecasts}. Operational Research Quarterly, 20(4).
+
+\bibitem{btz2009} Bollerslev, T., Tauchen, G., Zhou, H. (2009). \emph{Expected
+Stock Returns and Variance Risk Premia}. Review of Financial Studies, 22(11).
+
+\bibitem{carrwu2009} Carr, P., Wu, L. (2009). \emph{Variance Risk Premiums}.
+Review of Financial Studies, 22(3).
+
+\bibitem{corsi2009} Corsi, F. (2009). \emph{A Simple Approximate Long-Memory
+Model of Realized Volatility}. Journal of Financial Econometrics, 7(2).
+
+\bibitem{dm1995} Diebold, F., Mariano, R. (1995). \emph{Comparing Predictive
+Accuracy}. Journal of Business \& Economic Statistics, 13(3).
+
+\bibitem{gk1980} Garman, M., Klass, M. (1980). \emph{On the Estimation of
+Security Price Volatilities from Historical Data}. Journal of Business, 53(1).
+
+\bibitem{lopez2018} López de Prado, M. (2018). \emph{Advances in Financial
+Machine Learning}. Wiley.
+
+\bibitem{parkinson1980} Parkinson, M. (1980). \emph{The Extreme Value Method
+for Estimating the Variance of the Rate of Return}. Journal of Business, 53(1).
+
+\bibitem{patton2015} Patton, A., Sheppard, K. (2015). \emph{Good Volatility,
+Bad Volatility: Signed Jumps and the Persistence of Volatility}. Review of
+Economics and Statistics, 97(3).
+
+\bibitem{whaley2009} Whaley, R. (2009). \emph{Understanding the VIX}. Journal
+of Portfolio Management, 35(3).
+
+\end{thebibliography}
+
+\end{document}

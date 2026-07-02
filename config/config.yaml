@@ -1,0 +1,88 @@
+# Central configuration for the volatility ML research pipeline.
+# All paths are relative to the project root.
+
+data:
+  # Core tickers: required for the feature matrix. Rows where any of them
+  # is missing are dropped. "^VIX3M" starts in Dec 2007, which sets the
+  # effective start of the dataset.
+  core_tickers: ["SPY", "QQQ", "^VIX", "^VIX3M"]
+  # Tradable volatility proxies used only by the backtest. They start
+  # later (2011) and are allowed to have missing history.
+  proxy_tickers: ["VIXY", "SVXY"]
+  start_date: "2005-01-01"
+  end_date: null            # null = today
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+
+features:
+  # Ticker whose realized volatility we try to predict.
+  target_ticker: "SPY"
+  # Rolling windows (trading days) for close-to-close realized vol.
+  vol_windows: [5, 20, 60]
+  # Rolling windows for the Garman-Klass (OHLC) estimator.
+  gk_windows: [5, 20]
+  # Prediction horizon (trading days) for the future realized vol target.
+  target_horizon: 5
+  # Target transform: "rv" (level), "log_rv", or "log_rv_ratio"
+  # (log of future RV / implied vol — the variance-risk-premium residual).
+  target_type: "log_rv_ratio"
+  # Shock feature: |return| > threshold * rolling sigma over sigma_window.
+  shock_sigma_window: 60
+  shock_threshold: 2.0
+  trading_days_per_year: 252
+
+models:
+  walk_forward:
+    # Rolling training window (trading days), ~5 years.
+    train_window: 1260
+    # Refit frequency (trading days), ~1 quarter.
+    refit_every: 63
+    # Purge gap between the last training date and the first prediction
+    # date, to avoid target-overlap leakage. Must be >= target_horizon.
+    purge: 5
+  ridge:
+    alpha: 1.0
+  lasso:
+    alpha: 0.001
+  random_forest:
+    n_estimators: 400
+    max_depth: 6
+    min_samples_leaf: 20
+    random_state: 42
+    n_jobs: -1
+  gradient_boosting:
+    n_estimators: 400
+    learning_rate: 0.05
+    max_depth: 3
+    random_state: 42
+  # Quantile Gradient Boosting (prediction uncertainty).
+  quantiles: [0.1, 0.9]
+  # Models averaged (in RV space) to form the "ensemble" prediction.
+  ensemble_members: ["harx", "ridge", "random_forest", "gradient_boosting"]
+
+signal:
+  # Which prediction column drives the signal (see predictions_rv.csv).
+  model_name: "ensemble"
+  # The score is log(predicted RV / implied vol). Hysteresis thresholds:
+  # enter a position when |score| > entry, exit when |score| < exit.
+  entry_threshold: 0.10
+  exit_threshold: 0.03
+  # Position magnitude = min(|score| / sizing_scale, 1).
+  sizing_scale: 0.30
+  # Halve the position when the q10/q90 quantile band straddles zero.
+  use_quantile_conviction: true
+  # Volatility targeting of the traded leg.
+  vol_target: 0.30          # annualized
+  proxy_vol_window: 20
+  max_leverage: 1.0
+
+backtest:
+  # Long-vol exposure is expressed with long_vol_ticker, short-vol
+  # exposure with a long position in short_vol_ticker (inverse ETP).
+  # Note: these ETPs carry severe roll/decay risks (see docs/theory.tex).
+  long_vol_ticker: "VIXY"
+  short_vol_ticker: "SVXY"
+  # One-way transaction cost in basis points, charged on weight changes.
+  transaction_cost_bps: 10.0
+  initial_capital: 100000.0
+  report_dir: "data/processed/report"
