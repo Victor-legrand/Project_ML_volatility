@@ -92,18 +92,40 @@ python scripts/run_train.py       # 3. Walk-forward : 8 modèles + benchmarks + 
 python scripts/run_backtest.py    # 4. Signal, backtest VIXY/SVXY, rapport
 ```
 
-Étape optionnelle mais recommandée — le test « le ML gagne-t-il sa place ? » :
+Étapes de recherche complémentaires — le test « le ML gagne-t-il sa place ? » :
 
 ```bash
-python scripts/run_strategy_benchmarks.py   # 5. Stratégie ML vs benchmarks sans modèle
+python scripts/run_tail_model.py             # 5. Classifieur de queue P(RV > 1.5×IV)
+python scripts/run_strategy_benchmarks.py    # 6. Stratégies ML vs benchmarks sans modèle
 ```
 
-Ce script compare, à moteur/coûts/vol targeting strictement identiques, la
-stratégie ML à trois références sans apprentissage : short vol constant (carry
-pur), règle de contango (short vol si VIX/VIX3M < 1), et carry avec
-kill-switch ML (carry coupé quand le modèle prédit RV > IV). Il produit une
-table de métriques, les rendements sur les fenêtres de stress (volmageddon
-2018, covid 2020…) et les equity curves comparées.
+`run_strategy_benchmarks.py` compare, à moteur/coûts/vol targeting strictement
+identiques : short vol constant (carry pur), règle de contango (short vol si
+VIX/VIX3M < 1), carry avec kill-switch ML (coupé quand le modèle prédit
+RV > IV), stratégie combinée, carry avec tail-switch (coupé quand P(choc)
+dépasse un seuil), et la stratégie ML complète. Il produit une table de
+métriques, les rendements sur les fenêtres de stress (volmageddon 2018, covid
+2020…) et les equity curves comparées.
+
+### Principaux verdicts (2011–2026, mêmes coûts et vol target)
+
+| Stratégie | Sharpe | CAGR | Max DD |
+|---|---|---|---|
+| Carry + kill-switch ML | **0.61** | **15.3%** | -43% |
+| Carry + tail-switch | 0.61 | 15.0% | -50% |
+| Règle de contango (zéro ML) | 0.57 | 13.1% | **-36%** |
+| Short vol constant | 0.52 | 12.1% | -58% |
+| Stratégie ML complète (hystérésis+sizing) | 0.31 | 4.1% | -42% |
+
+1. La prévision de niveau **a de la valeur comme filtre de jours** sur le
+   carry (+9 pts de Sharpe vs carry nu), mais pas comme signal autonome : la
+   couche hystérésis/sizing diluait le carry sans rien timer.
+2. Le choc de queue à 5 jours est **essentiellement imprévisible** avec des
+   features quotidiennes (AUC ≈ 0.5) ; le tail-switch n'apporte aucune
+   protection dans les fenêtres de stress. Seule la règle de contango coupe
+   *pendant* le stress (meilleur drawdown).
+3. Architecture retenue : moteur carry + filtre contango (protection) +
+   kill-switch ML (sélection des jours).
 
 Tests :
 

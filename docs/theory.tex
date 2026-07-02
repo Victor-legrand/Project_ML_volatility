@@ -460,6 +460,97 @@ Anti-look-ahead tests & The three classic leaks locked down by pytest & \texttt{
 \end{center}
 
 %=============================================================================
+\section{Version 3: strategy-level benchmarks and tail classification}
+\label{sec:v3}
+
+\subsection{Does the model earn its place? Forecast skill vs.\ P\&L value}
+
+Statistical accuracy (RMSE, $R^2$) and portfolio value are different
+questions. A forecast can be accurate yet redundant --- if a naive rule
+captures the same P\&L --- or mediocre yet valuable, if it fires at the right
+times. Version~3 therefore benchmarks the \emph{strategy} itself against
+model-free opponents run through the exact same engine, costs, volatility
+targeting and out-of-sample period:
+\begin{itemize}
+\item \textbf{constant short vol} --- permanent $-1$ position: the raw
+  variance risk premium, collected with zero intelligence. Any strategy that
+  earns less adds no value.
+\item \textbf{contango rule} --- short vol only when
+  $\mathrm{VIX}/\mathrm{VIX3M} < 1$; a documented heuristic with no learned
+  parameter.
+\item \textbf{carry with ML kill switch} --- permanent short vol, cut to flat
+  on days where the model's score $s_t = \ln(\widehat{\RV}/\IV) > 0$: the
+  forecast used purely as a day filter.
+\end{itemize}
+
+The empirical verdict (2011--2026) was unambiguous. The full ML strategy of
+section~\ref{sec:signal} (hysteresis + conviction sizing) was dominated by
+\emph{all} benchmarks, including naked carry: its daily returns correlate at
+$0.89$ with constant short vol, i.e.\ it is repackaged carry at reduced
+exposure --- the sizing layer diluted the premium without timing anything.
+The kill switch, by contrast, beat naked carry by $\sim$9 Sharpe points and
+$+3$ points of CAGR: \textbf{the forecast has portfolio value, but as a risk
+filter on the carry, not as a standalone signal}. This distinction ---
+locating where in the strategy stack the information is actually monetized
+--- is the central lesson of the exercise.
+
+\subsection{Tail classification: reframing the hard part}
+
+The stress windows (February 2018, August 2024) revealed the residual
+weakness: a 5-day \emph{level} forecast does not see shocks that erupt from
+calm regimes; by the time it reacts, the term structure has already
+inverted. Version~3 reframes this as binary classification of the event that
+actually destroys a short-vol position:
+\begin{equation}
+\text{tail}_t = \mathbf{1}\Bigl\{\RV_{t+1\to t+h} > k \cdot \IV_t\Bigr\},
+\qquad k = 1.5,
+\end{equation}
+a rare event (base rate $\approx 3\%$) fitted with logistic regression,
+gradient boosting and random forest classifiers under the same purged
+walk-forward protocol. Rare-event forecasts are evaluated on ranking and
+calibration rather than accuracy:
+\begin{itemize}
+\item \textbf{AUC} --- probability that a random event day is ranked above a
+  random non-event day (0.5 = uninformative);
+\item \textbf{Brier score} $= \frac{1}{n}\sum (p_t - y_t)^2$, compared with
+  the Brier score of always predicting the base rate;
+\item \textbf{decile lift} --- observed event frequency per predicted-probability
+  decile; a useful classifier concentrates events in the top deciles.
+\end{itemize}
+
+\subsection{An honest negative result}
+
+All three classifiers produced AUCs between $0.50$ and $0.55$ with no decile
+concentration: \textbf{with daily price-based features, the 5-day tail event
+is essentially unpredictable}. The P\&L test confirmed it --- a carry
+strategy cut when $P(\text{tail})$ exceeds a threshold matched the kill
+switch's Sharpe but suffered stress-window losses identical to naked carry:
+its modest edge came from skipping mediocre-carry days, not from timing
+shocks. This is consistent with volatility shocks being driven by news
+(a volatility-product unwind, a pandemic) rather than by anything encoded in
+past prices, and it is a valuable negative result: it stops further
+investment in tail \emph{prediction} from this feature set, and redirects it
+toward tail \emph{protection} (the contango filter, which cuts exposure
+\emph{during} stress and achieves the best drawdown, or paying for convexity
+outright).
+
+\subsection{Resulting architecture}
+
+The version-3 evidence selects a three-layer architecture, each layer doing
+the one job it demonstrably does well:
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Layer} & \textbf{Role} & \textbf{Evidence} \\
+\midrule
+Short-vol carry & return engine & positive VRP (\S\ref{sec:vrp}) \\
+Contango filter & protection \emph{during} stress & best max drawdown \\
+ML kill switch & day selection & best Sharpe and CAGR \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%=============================================================================
 \section{Limitations and extensions}
 
 This framework remains a deliberate simplification. The main limitations, in
