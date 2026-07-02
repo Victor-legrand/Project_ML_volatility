@@ -92,6 +92,19 @@ python scripts/run_train.py       # 3. Walk-forward : 8 modèles + benchmarks + 
 python scripts/run_backtest.py    # 4. Signal, backtest VIXY/SVXY, rapport
 ```
 
+Étape optionnelle mais recommandée — le test « le ML gagne-t-il sa place ? » :
+
+```bash
+python scripts/run_strategy_benchmarks.py   # 5. Stratégie ML vs benchmarks sans modèle
+```
+
+Ce script compare, à moteur/coûts/vol targeting strictement identiques, la
+stratégie ML à trois références sans apprentissage : short vol constant (carry
+pur), règle de contango (short vol si VIX/VIX3M < 1), et carry avec
+kill-switch ML (carry coupé quand le modèle prédit RV > IV). Il produit une
+table de métriques, les rendements sur les fenêtres de stress (volmageddon
+2018, covid 2020…) et les equity curves comparées.
+
 Tests :
 
 ```bash
