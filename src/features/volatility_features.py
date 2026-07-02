@@ -186,12 +186,16 @@ def build_feature_matrix(
     shock_sigma_window: int = 60,
     shock_threshold: float = 2.0,
     trading_days_per_year: int = 252,
+    require_target: bool = True,
 ) -> pd.DataFrame:
     """Build the modelling dataset for one target ticker.
 
     Returns a dataframe with feature columns plus ``target`` (transformed
     prediction target) and ``future_rv`` (raw future RV level, kept for
-    evaluation only — never feed it to a model). NaN rows dropped.
+    evaluation only — never feed it to a model). Rows with incomplete
+    features are dropped; with ``require_target=False`` the most recent
+    rows (whose future window is not observed yet) are kept with a NaN
+    target — needed for live inference on today's data.
     """
     target_returns = returns[target_ticker]
     features = pd.DataFrame(index=returns.index)
@@ -248,7 +252,12 @@ def build_feature_matrix(
     future_rv = future_realized_volatility(target_returns, target_horizon, days_per_year)
     features[FUTURE_RV_COLUMN] = future_rv
     features[TARGET_COLUMN] = transform_target(future_rv, implied, target_type)
-    return features.dropna(how="any")
+
+    feature_columns = [c for c in features.columns if c not in NON_FEATURE_COLUMNS]
+    features = features.dropna(subset=feature_columns)
+    if require_target:
+        features = features.dropna(subset=NON_FEATURE_COLUMNS)
+    return features
 
 
 def split_features_target(

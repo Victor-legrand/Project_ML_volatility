@@ -97,6 +97,18 @@ signal:
   proxy_vol_window: 20
   max_leverage: 1.0
 
+daily_signal:
+  # Notification channels: "console", "telegram", "email". Credentials
+  # come from environment variables (see src/utils/notify.py), never
+  # from this file.
+  channels: ["console"]
+  # Warn if the latest close is older than this many business days.
+  stale_after_days: 3
+  # ML kill switch: flat when score exceeds this.
+  score_threshold: 0.0
+  # Contango filter: flat when VIX/VIX3M is at or above this.
+  contango_threshold: 1.0
+
 backtest:
   # Long-vol exposure is expressed with long_vol_ticker, short-vol
   # exposure with a long position in short_vol_ticker (inverse ETP).

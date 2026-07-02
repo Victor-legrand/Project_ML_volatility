@@ -133,6 +133,34 @@ Tests :
 python -m pytest tests/ -q
 ```
 
+## Signal quotidien (bot de signal, sans exécution)
+
+```bash
+python scripts/run_daily_signal.py
+```
+
+Télécharge les données du jour, recalcule les features et le score avec les
+modèles sauvegardés par `run_train.py`, applique l'architecture à trois
+couches (carry + filtre contango + kill-switch ML), journalise le signal dans
+`data/processed/signal_log.csv` (piste d'audit pour le paper trading) et
+envoie le rapport sur les canaux configurés (`daily_signal.channels` dans la
+config) : `console`, `telegram` ou `email`. Les identifiants viennent de
+variables d'environnement, jamais de la config :
+
+- Telegram : `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+- Email : `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_TO`
+
+À planifier après la clôture US (22h15 Paris), par exemple avec cron :
+
+```cron
+15 22 * * 1-5  cd /chemin/vers/vol_ml_fund && .venv/bin/python scripts/run_daily_signal.py
+```
+
+Relancer `run_train.py` environ une fois par trimestre pour rafraîchir les
+modèles sauvegardés (cohérent avec le protocole walk-forward). **Ce job
+recommande, il n'exécute jamais d'ordres** — les décisions et les ordres
+restent manuels.
+
 ## Dashboard interactif
 
 Une fois le pipeline exécuté (au moins jusqu'à `run_train.py`) :
