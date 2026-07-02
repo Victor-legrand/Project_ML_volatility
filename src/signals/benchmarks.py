@@ -48,3 +48,24 @@ def carry_with_kill_switch(
     position = pd.Series(-1.0, index=score.index, name="position")
     position[score > score_threshold] = 0.0
     return position
+
+
+def combined_carry(
+    score: pd.Series,
+    term_structure: pd.Series,
+    score_threshold: float = 0.0,
+    contango_threshold: float = 1.0,
+) -> pd.Series:
+    """Carry cut by EITHER safety switch: model warning or backwardation.
+
+    Short vol only when the model does not expect underpriced volatility
+    (``score <= score_threshold``) AND the VIX term structure is in
+    contango (``VIX/VIX3M < contango_threshold``). The two switches are
+    complementary: the model selects bad *days*, the term structure cuts
+    exposure *during* stress regimes the model cannot see coming.
+    """
+    aligned_score, aligned_ts = score.align(term_structure, join="inner")
+    position = pd.Series(-1.0, index=aligned_score.index, name="position")
+    position[aligned_score > score_threshold] = 0.0
+    position[aligned_ts >= contango_threshold] = 0.0
+    return position

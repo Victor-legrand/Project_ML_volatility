@@ -31,6 +31,7 @@ from src.backtest.engine import position_to_leg_weights, run_backtest
 from src.backtest.metrics import performance_summary
 from src.signals.benchmarks import (
     carry_with_kill_switch,
+    combined_carry,
     constant_short_vol,
     contango_rule,
 )
@@ -105,6 +106,7 @@ def main() -> None:
         "constant_short": constant_short_vol(common_index),
         "contango_rule": contango_rule(term_structure),
         "ml_kill_switch": carry_with_kill_switch(score),
+        "combined_carry": combined_carry(score, term_structure),
         "ml_strategy": ml_position,
     }
 
