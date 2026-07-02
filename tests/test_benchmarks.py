@@ -36,6 +36,14 @@ def test_kill_switch_cuts_carry_on_model_warning() -> None:
     assert position.tolist() == [-1.0, 0.0, -1.0, 0.0]
 
 
+def test_tail_switch_cuts_carry_on_high_probability() -> None:
+    from src.signals.benchmarks import carry_with_tail_switch
+
+    tail_probability = _series([0.05, 0.30, 0.25, 0.60])
+    position = carry_with_tail_switch(tail_probability, proba_cut=0.25)
+    assert position.tolist() == [-1.0, 0.0, -1.0, 0.0]
+
+
 def test_combined_carry_requires_both_switches_off() -> None:
     # Short only when score <= 0 (no model warning) AND contango (< 1).
     score = _series([-0.20, 0.10, -0.20, 0.10])

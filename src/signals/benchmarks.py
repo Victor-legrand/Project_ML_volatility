@@ -50,6 +50,22 @@ def carry_with_kill_switch(
     return position
 
 
+def carry_with_tail_switch(
+    tail_probability: pd.Series,
+    proba_cut: float = 0.25,
+) -> pd.Series:
+    """Short vol carry, cut to flat when P(tail event) exceeds the cut.
+
+    ``tail_probability`` is a classifier's P(future RV > k * IV): the
+    days most likely to hurt a short-vol position are skipped.
+    """
+    if not 0.0 <= proba_cut <= 1.0:
+        raise ValueError(f"proba_cut must be in [0, 1], got {proba_cut}")
+    position = pd.Series(-1.0, index=tail_probability.index, name="position")
+    position[tail_probability > proba_cut] = 0.0
+    return position
+
+
 def combined_carry(
     score: pd.Series,
     term_structure: pd.Series,

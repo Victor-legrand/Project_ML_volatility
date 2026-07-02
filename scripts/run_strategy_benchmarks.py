@@ -31,6 +31,7 @@ from src.backtest.engine import position_to_leg_weights, run_backtest
 from src.backtest.metrics import performance_summary
 from src.signals.benchmarks import (
     carry_with_kill_switch,
+    carry_with_tail_switch,
     combined_carry,
     constant_short_vol,
     contango_rule,
@@ -109,6 +110,20 @@ def main() -> None:
         "combined_carry": combined_carry(score, term_structure),
         "ml_strategy": ml_position,
     }
+
+    # Tail-classifier switch, if run_tail_model.py has been executed.
+    tail_path = processed_dir / "tail_probabilities.csv"
+    tail_file = Path(__file__).resolve().parents[1] / tail_path
+    if tail_file.exists():
+        tail_cfg = config["tail_model"]
+        tail_probability = load_dataframe(tail_path)[tail_cfg["model_name"]]
+        raw_positions["tail_switch"] = carry_with_tail_switch(
+            tail_probability.reindex(common_index).fillna(0.0),
+            proba_cut=tail_cfg["proba_cut"],
+        )
+    else:
+        print("(tail_probabilities.csv not found — run scripts/run_tail_model.py "
+              "to include the tail_switch strategy)\n")
 
     summaries: dict[str, dict[str, float]] = {}
     stress: dict[str, dict[str, float]] = {}
