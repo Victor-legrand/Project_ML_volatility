@@ -67,29 +67,37 @@ def latest_features(config: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
     return dataset, prices, returns
 
 
+def predict_rv_with_model(
+    model_name: str,
+    X_today: pd.DataFrame,
+    implied_vol: pd.Series,
+    config: dict,
+) -> float:
+    """Today's predicted RV (RV space) from one saved model."""
+    models_dir = resolve_path(Path(config["data"]["processed_dir"]) / "models")
+    model_path = models_dir / f"{model_name}.joblib"
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"Missing saved model {model_path} — run scripts/run_train.py first."
+        )
+    model = joblib.load(model_path)
+    raw = pd.Series(np.asarray(model.predict(X_today)).ravel(), index=X_today.index)
+    inverted = invert_target(raw, implied_vol, config["features"]["target_type"])
+    return float(inverted.iloc[-1])
+
+
 def ensemble_prediction(
     X_today: pd.DataFrame,
     implied_vol: pd.Series,
     config: dict,
 ) -> float:
     """Predicted future RV from the saved ensemble members (RV space)."""
-    models_dir = resolve_path(Path(config["data"]["processed_dir"]) / "models")
     members = config["models"]["ensemble_members"]
-    predictions = []
-    for name in members:
-        model_path = models_dir / f"{name}.joblib"
-        if not model_path.exists():
-            raise FileNotFoundError(
-                f"Missing saved model {model_path} — run scripts/run_train.py first."
-            )
-        model = joblib.load(model_path)
-        raw = pd.Series(
-            np.asarray(model.predict(X_today)).ravel(), index=X_today.index
-        )
-        predictions.append(
-            invert_target(raw, implied_vol, config["features"]["target_type"])
-        )
-    return float(pd.concat(predictions, axis=1).mean(axis=1).iloc[-1])
+    values = [
+        predict_rv_with_model(name, X_today, implied_vol, config)
+        for name in members
+    ]
+    return float(np.mean(values))
 
 
 def append_signal_log(log_path: Path, row: dict) -> None:
@@ -129,6 +137,23 @@ def main() -> None:
     score = float(np.log(predicted_rv / implied))
     term_structure = float(X["vix_term_structure"].iloc[-1])
 
+    # Upper-quantile scenario, always computed for the risk display.
+    q90_rv = predict_rv_with_model("gb_q90", X.tail(1), X["implied_vol"], config)
+    q90_score = float(np.log(q90_rv / implied))
+
+    # The kill switch can run on the upper-quantile scenario rather than
+    # the mean forecast (see config daily_signal.kill_switch_model).
+    switch_model = daily_cfg["kill_switch_model"]
+    if switch_model == "ensemble":
+        switch_rv, switch_score = predicted_rv, score
+    elif switch_model == "gb_q90":
+        switch_rv, switch_score = q90_rv, q90_score
+    else:
+        switch_rv = predict_rv_with_model(
+            switch_model, X.tail(1), X["implied_vol"], config
+        )
+        switch_score = float(np.log(switch_rv / implied))
+
     short_ticker = bt_cfg["short_vol_ticker"]
     short_leg_returns = prices[short_ticker].pct_change()
     short_leg_vol = float(
@@ -137,7 +162,7 @@ def main() -> None:
     )
 
     recommendation = recommend_position(
-        score=score,
+        score=switch_score,
         term_structure=term_structure,
         short_leg_vol=short_leg_vol,
         score_threshold=daily_cfg["score_threshold"],
@@ -153,6 +178,11 @@ def main() -> None:
         "predicted_rv": predicted_rv,
         "implied_vol": implied,
         "score": score,
+        "q90_rv": q90_rv,
+        "q90_score": q90_score,
+        "switch_model": switch_model,
+        "switch_rv": switch_rv,
+        "switch_score": switch_score,
         "short_leg_ticker": short_ticker,
     }
     message = format_message(today.date(), metrics, recommendation, stale_warning)
@@ -164,6 +194,9 @@ def main() -> None:
         "term_structure": term_structure,
         "predicted_rv": predicted_rv,
         "score": score,
+        "q90_score": q90_score,
+        "switch_model": switch_model,
+        "switch_score": switch_score,
         "short_leg_vol": short_leg_vol,
         "stance": recommendation.stance,
         "scaled_position": recommendation.scaled_position,

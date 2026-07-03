@@ -132,8 +132,16 @@ daily_signal:
   channels: ["console"]
   # Warn if the latest close is older than this many business days.
   stale_after_days: 3
-  # ML kill switch: flat when score exceeds this.
+  # ML kill switch: flat when the switch score exceeds this.
   score_threshold: 0.0
+  # Which prediction drives the kill switch: "ensemble" (mean forecast)
+  # or a saved model name like "gb_q90" (upper-quantile scenario).
+  # Benchmark finding: gb_q90 at threshold 0 gives by far the best
+  # stress protection (covid: -1% vs -34%) but fires so often that it
+  # forfeits nearly all the carry (negative Sharpe). It is a
+  # protection/carry dial; the q90 scenario is always displayed in the
+  # daily report either way.
+  kill_switch_model: "ensemble"
   # Contango filter: flat when VIX/VIX3M is at or above this.
   contango_threshold: 1.0
 

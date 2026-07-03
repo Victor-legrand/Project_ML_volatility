@@ -106,7 +106,16 @@ def format_message(
         f"VIX/VIX3M       : {metrics['term_structure']:.3f}",
         f"RV prédite (5j) : {metrics['predicted_rv']:.1%}",
         f"Vol implicite   : {metrics['implied_vol']:.1%}",
-        f"Score           : {metrics['score']:+.3f}",
+        f"Score (moyenne) : {metrics['score']:+.3f}",
+    ]
+    if "q90_score" in metrics:
+        lines += [
+            f"RV scénario q90 : {metrics['q90_rv']:.1%} "
+            f"(score {metrics['q90_score']:+.3f}"
+            + (" — pilote le kill-switch)"
+               if metrics.get("switch_model") == "gb_q90" else ")"),
+        ]
+    lines += [
         "",
         f"RECOMMANDATION  : {recommendation.stance}"
         + (f" (position {recommendation.scaled_position:+.2f} sur "

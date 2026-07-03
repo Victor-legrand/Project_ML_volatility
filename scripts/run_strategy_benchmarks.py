@@ -103,11 +103,19 @@ def main() -> None:
     common_index = ml_position.index
     term_structure = features["vix_term_structure"].reindex(common_index)
 
+    # Quantile kill switch: cut the carry when even the q90 scenario of
+    # the forecast distribution breaches implied vol, i.e. the model
+    # sees >= 10% probability that realized vol exceeds what the option
+    # market priced. A risk rule on the distribution, not the mean.
+    score_q90 = volatility_score(predictions["gb_q90"], implied_vol)
+
     raw_positions: dict[str, pd.Series] = {
         "constant_short": constant_short_vol(common_index),
         "contango_rule": contango_rule(term_structure),
         "ml_kill_switch": carry_with_kill_switch(score),
+        "q90_kill_switch": carry_with_kill_switch(score_q90),
         "combined_carry": combined_carry(score, term_structure),
+        "q90_combined": combined_carry(score_q90, term_structure),
         "ml_strategy": ml_position,
     }
 
