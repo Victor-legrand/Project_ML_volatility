@@ -24,8 +24,9 @@ def main() -> None:
     config = load_config()
     data_cfg = config["data"]
     core = data_cfg["core_tickers"]
+    aux = data_cfg["aux_tickers"]
     proxies = data_cfg["proxy_tickers"]
-    tickers = core + proxies
+    tickers = core + aux + proxies
 
     print(f"Downloading {tickers} from {data_cfg['start_date']}...")
     close, ohlc = download_daily_data(
@@ -39,9 +40,9 @@ def main() -> None:
         save_dataframe(frame, raw_dir / f"ohlc_{safe_name(ticker)}.csv")
     print(f"Raw data saved in {raw_dir} ({len(close)} rows)")
 
-    # Core tickers are required on every row; tradable proxies (VIXY,
-    # SVXY) start later and keep their leading NaNs.
-    cleaned = clean_prices(close, required_columns=core)
+    # Core and auxiliary tickers are required on every row; tradable
+    # proxies (VIXY, SVXY) start later and keep their leading NaNs.
+    cleaned = clean_prices(close, required_columns=core + aux)
     returns = compute_log_returns(cleaned)
 
     processed_dir = Path(data_cfg["processed_dir"])

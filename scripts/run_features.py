@@ -40,6 +40,7 @@ def main() -> None:
         shock_sigma_window=feat_cfg["shock_sigma_window"],
         shock_threshold=feat_cfg["shock_threshold"],
         trading_days_per_year=feat_cfg["trading_days_per_year"],
+        aux_indices=prices[data_cfg["aux_tickers"]],
     )
 
     dataset_path = save_dataframe(dataset, processed_dir / "features.csv")

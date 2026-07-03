@@ -24,11 +24,14 @@ from src.features.volatility_features import invert_target, split_features_targe
 from src.models.baseline import HARModel, HARXModel
 from src.models.evaluation import dm_table, evaluation_table, rmse_by_period
 from src.models.ml_model import (
+    build_extra_trees,
     build_gradient_boosting,
     build_lasso,
     build_quantile_gradient_boosting,
     build_random_forest,
     build_ridge,
+    build_stacking_meta_model,
+    build_tuned_hist_gradient_boosting,
     feature_importances,
 )
 from src.models.walkforward import walk_forward_predictions
@@ -47,6 +50,10 @@ def build_factories(models_cfg: dict, vol_windows: list[int]) -> dict:
         "random_forest": lambda: build_random_forest(models_cfg["random_forest"]),
         "gradient_boosting": lambda: build_gradient_boosting(
             models_cfg["gradient_boosting"]
+        ),
+        "extra_trees": lambda: build_extra_trees(models_cfg["extra_trees"]),
+        "hist_gb": lambda: build_tuned_hist_gradient_boosting(
+            models_cfg["hist_gradient_boosting"]
         ),
     }
     gb_params = models_cfg["gradient_boosting"]
@@ -84,6 +91,25 @@ def main() -> None:
     print(f"Out-of-sample: {raw_predictions.index[0].date()} -> "
           f"{raw_predictions.index[-1].date()} ({len(raw_predictions)} obs)")
 
+    # Stacking: a meta model fitted on the *accumulated out-of-sample*
+    # predictions of the point models (expanding window, same purge).
+    # Leak-free by construction: every meta training row is a genuine
+    # past out-of-sample forecast.
+    stack_cfg = models_cfg["stacking"]
+    base_columns = [c for c in raw_predictions.columns
+                    if not c.startswith(QUANTILE_PREFIX)]
+    stacked_raw, stack_models = walk_forward_predictions(
+        raw_predictions[base_columns],
+        y.reindex(raw_predictions.index),
+        {"stacked": lambda: build_stacking_meta_model(stack_cfg["meta_alpha"])},
+        train_window=len(raw_predictions),      # expanding window
+        refit_every=wf_cfg["refit_every"],
+        purge=wf_cfg["purge"],
+        min_train=stack_cfg["min_train"],
+    )
+    raw_predictions = raw_predictions.join(stacked_raw)
+    last_models["stacked"] = stack_models["stacked"]
+
     # Back to RV space so all models and benchmarks are comparable.
     predictions_rv = raw_predictions.apply(
         lambda col: invert_target(col, implied_vol, target_type)
@@ -96,15 +122,25 @@ def main() -> None:
     point_forecasts = predictions_rv.drop(
         columns=[c for c in predictions_rv.columns if c.startswith(QUANTILE_PREFIX)]
     )
-    print("\nOut-of-sample comparison in RV space (target: future 5-day RV):")
-    print(evaluation_table(y_true_rv, point_forecasts).round(4).to_string())
+    # The stacked model starts min_train days later: compare everyone on
+    # the common sample where it exists.
+    common = point_forecasts.dropna().index
+    print(f"\nOut-of-sample comparison in RV space, common sample "
+          f"({common[0].date()} -> {common[-1].date()}, {len(common)} obs):")
+    print(evaluation_table(y_true_rv.loc[common], point_forecasts.loc[common])
+          .round(4).to_string())
+    weights = pd.Series(
+        last_models["stacked"].coef_, index=base_columns
+    ).round(3)
+    print(f"\nStacking weights (last refit): {weights[weights > 0].to_dict()}")
 
-    print("\nRMSE by year (stability across regimes):")
-    print(rmse_by_period(y_true_rv, point_forecasts).round(4).to_string())
+    print("\nRMSE by year (stability across regimes, common sample):")
+    print(rmse_by_period(y_true_rv.loc[common], point_forecasts.loc[common])
+          .round(4).to_string())
 
     print("\nDiebold-Mariano vs HAR (dm_stat < 0 => beats HAR):")
-    print(dm_table(y_true_rv, point_forecasts, benchmark="har", horizon=horizon)
-          .round(4).to_string())
+    print(dm_table(y_true_rv.loc[common], point_forecasts.loc[common],
+                   benchmark="har", horizon=horizon).round(4).to_string())
 
     models_dir = resolve_path(processed_dir / "models")
     models_dir.mkdir(parents=True, exist_ok=True)

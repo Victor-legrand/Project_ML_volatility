@@ -25,6 +25,7 @@ def walk_forward_predictions(
     train_window: int = 1260,
     refit_every: int = 63,
     purge: int = 5,
+    min_train: int | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Generate out-of-sample predictions for several models.
 
@@ -42,6 +43,11 @@ def walk_forward_predictions(
     purge:
         Gap (rows) between the end of the training set and the first
         predicted row. Must be >= the target horizon.
+    min_train:
+        Rows required before the first prediction. Defaults to
+        ``train_window``; set it lower (with a large ``train_window``)
+        for an expanding-window protocol — used by the stacking meta
+        model, which starts from little out-of-sample history.
 
     Returns
     -------
@@ -53,11 +59,11 @@ def walk_forward_predictions(
     if purge < 0:
         raise ValueError(f"purge must be >= 0, got {purge}")
     n_rows = len(X)
-    first_prediction = train_window + purge
+    first_prediction = (min_train if min_train is not None else train_window) + purge
     if first_prediction >= n_rows:
         raise ValueError(
-            f"Not enough data: {n_rows} rows for train_window={train_window} "
-            f"and purge={purge}"
+            f"Not enough data: {n_rows} rows for min_train="
+            f"{min_train if min_train is not None else train_window} and purge={purge}"
         )
 
     predictions: dict[str, pd.Series] = {

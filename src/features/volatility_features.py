@@ -76,6 +76,47 @@ def garman_klass_volatility(
     return np.sqrt(variance.rolling(window).mean() * trading_days_per_year)
 
 
+def overnight_volatility(
+    ohlc: pd.DataFrame,
+    window: int,
+    trading_days_per_year: int = 252,
+) -> pd.Series:
+    """Annualized volatility of overnight gaps, log(Open_t / Close_{t-1}).
+
+    Overnight and intraday volatility carry different information (news
+    arrival vs trading activity); the overnight component is a known
+    predictor of next-day volatility.
+    """
+    overnight_returns = np.log(ohlc["Open"] / ohlc["Close"].shift(1))
+    return overnight_returns.rolling(window).std() * np.sqrt(trading_days_per_year)
+
+
+def ewma_volatility(
+    returns: pd.Series,
+    decay: float = 0.94,
+    trading_days_per_year: int = 252,
+) -> pd.Series:
+    """Annualized RiskMetrics EWMA volatility (lambda = 0.94).
+
+    Exponential weighting reacts faster than a flat rolling window
+    after a shock, and decays smoothly instead of dropping observations
+    at the window edge.
+    """
+    variance = returns.pow(2).ewm(alpha=1.0 - decay).mean()
+    return np.sqrt(variance * trading_days_per_year)
+
+
+def realized_quarticity(returns: pd.Series, window: int) -> pd.Series:
+    """Rolling realized quarticity proxy, mean of r^4.
+
+    Measures the sampling error of realized variance: the HAR-Q model
+    (Bollerslev, Patton, Quaedvlieg, 2016) shows that scaling the daily
+    RV term by sqrt(RQ) improves forecasts because a noisily-measured
+    RV should be trusted less.
+    """
+    return returns.pow(4).rolling(window).mean()
+
+
 def negative_semivolatility(
     returns: pd.Series,
     window: int,
@@ -187,6 +228,7 @@ def build_feature_matrix(
     shock_threshold: float = 2.0,
     trading_days_per_year: int = 252,
     require_target: bool = True,
+    aux_indices: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Build the modelling dataset for one target ticker.
 
@@ -221,6 +263,14 @@ def build_feature_matrix(
     # Leverage effect: downside semi-volatility.
     features["semi_rv_20"] = negative_semivolatility(target_returns, 20, days_per_year)
 
+    # Overnight component, EWMA vol, vol-of-vol, HAR-Q term, vol momentum.
+    features["overnight_20"] = overnight_volatility(ohlc, 20, days_per_year)
+    features["ewma_vol"] = ewma_volatility(target_returns, 0.94, days_per_year)
+    features["vol_of_vol_20"] = features[f"rv_{shortest}"].diff().rolling(20).std()
+    rq = realized_quarticity(target_returns, shortest)
+    features[f"harq_{shortest}"] = np.sqrt(rq) * features[f"rv_{shortest}"]
+    features["rv_momentum"] = features[f"rv_{shortest}"] / features[f"rv_{max(vol_windows)}"]
+
     # Cross-asset realized vols (shortest window).
     for ticker in returns.columns:
         if ticker != target_ticker:
@@ -238,6 +288,14 @@ def build_feature_matrix(
     features["vix_term_structure"] = implied / implied_3m
 
     # Returns, shock memory, drawdown, day-of-week seasonality.
+    # Auxiliary implied-vol-market indices (e.g. VVIX, SKEW): levels only.
+    if aux_indices is not None:
+        for ticker in aux_indices.columns:
+            safe_name = ticker.replace("^", "").lower()
+            features[f"{safe_name}_level"] = (
+                aux_indices[ticker].reindex(features.index) / 100.0
+            )
+
     features["return_1d"] = target_returns
     features["return_5d"] = target_returns.rolling(5).sum()
     features["days_since_shock"] = days_since_shock(

@@ -42,9 +42,10 @@ def latest_features(config: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
     """Download fresh data and build the feature matrix up to today."""
     data_cfg = config["data"]
     feat_cfg = config["features"]
-    tickers = data_cfg["core_tickers"] + data_cfg["proxy_tickers"]
+    required = data_cfg["core_tickers"] + data_cfg["aux_tickers"]
+    tickers = required + data_cfg["proxy_tickers"]
     close, ohlc = download_daily_data(tickers, data_cfg["start_date"])
-    prices = clean_prices(close, required_columns=data_cfg["core_tickers"])
+    prices = clean_prices(close, required_columns=required)
     returns = compute_log_returns(prices)
     dataset = build_feature_matrix(
         returns=returns[data_cfg["core_tickers"]],
@@ -61,6 +62,7 @@ def latest_features(config: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
         shock_threshold=feat_cfg["shock_threshold"],
         trading_days_per_year=feat_cfg["trading_days_per_year"],
         require_target=False,   # today's future window is not observed yet
+        aux_indices=prices[data_cfg["aux_tickers"]],
     )
     return dataset, prices, returns
 

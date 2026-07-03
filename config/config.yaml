@@ -6,6 +6,9 @@ data:
   # is missing are dropped. "^VIX3M" starts in Dec 2007, which sets the
   # effective start of the dataset.
   core_tickers: ["SPY", "QQQ", "^VIX", "^VIX3M"]
+  # Auxiliary implied-vol-market indices, used as level features only
+  # (VVIX: vol of VIX; SKEW: tail-risk pricing). Required on every row.
+  aux_tickers: ["^VVIX", "^SKEW"]
   # Tradable volatility proxies used only by the backtest. They start
   # later (2011) and are allowed to have missing history.
   proxy_tickers: ["VIXY", "SVXY"]
@@ -55,10 +58,35 @@ models:
     learning_rate: 0.05
     max_depth: 3
     random_state: 42
+  extra_trees:
+    n_estimators: 500
+    max_depth: 8
+    min_samples_leaf: 20
+    random_state: 42
+    n_jobs: -1
+  # HistGradientBoosting with hyperparameters re-tuned inside every
+  # walk-forward window (randomized search over a temporal CV).
+  hist_gradient_boosting:
+    tuning_iterations: 15
+    cv_splits: 3
+    random_state: 42
+    param_grid:
+      learning_rate: [0.02, 0.05, 0.1]
+      max_leaf_nodes: [7, 15, 31]
+      min_samples_leaf: [20, 50, 100]
+      l2_regularization: [0.0, 0.1, 1.0, 10.0]
+      max_iter: [150, 300]
+  # Stacking meta-learner: non-negative Ridge fitted on the accumulated
+  # out-of-sample predictions of the point models (leak-free by
+  # construction: expanding window with the same purge).
+  stacking:
+    meta_alpha: 1.0
+    min_train: 252
   # Quantile Gradient Boosting (prediction uncertainty).
   quantiles: [0.1, 0.9]
   # Models averaged (in RV space) to form the "ensemble" prediction.
-  ensemble_members: ["harx", "ridge", "random_forest", "gradient_boosting"]
+  ensemble_members: ["harx", "ridge", "random_forest", "gradient_boosting",
+                     "hist_gb", "extra_trees"]
 
 tail_model:
   # Tail event: future RV > ratio_threshold * implied vol.
